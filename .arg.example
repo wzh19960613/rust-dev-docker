@@ -1,0 +1,39 @@
+# Rust Dev Container - Environment Variables
+
+# Rust Image Tag
+RUST_TAG=latest
+
+# APT Mirror (optional, for faster downloads in China)
+# APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn
+
+# Tools and Features
+CLAUDE_CODE=true
+CODEX=false
+OPENCODE=false
+SSH=true
+
+# Node.js: true (latest LTS via NodeSource), false, or version (e.g. 22, 22.5.0)
+NODE=true
+# Zsh: true (apt default), false, or version (e.g. 5.9). Sets root's default shell.
+ZSH=true
+# Python: true (apt default python3 + pip + venv), false, or version (e.g. 3.11)
+PYTHON=true
+
+# Makefile Configuration
+IMAGE_NAME=rust-dev
+CONTAINER_NAME=rust-dev-container
+SSH_PORT=2222
+SECRETS_DIR=./secrets
+
+# Proxy when build
+BUILD_PROXY=socks5://localhost:2000
+
+# Proxy when run container (defaults to BUILD_PROXY if not set)
+# RUN_PROXY=http://your-proxy-host:port
+
+# Git configuration (optional)
+# GIT_USER=Your Name
+# GIT_EMAIL=your@email.com
+
+# Secrets are now managed via files in ./secrets/ directory
+# See secrets.example for details

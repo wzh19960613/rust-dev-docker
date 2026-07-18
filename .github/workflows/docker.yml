@@ -1,0 +1,68 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - Dockerfile
+      - entrypoint.sh
+      - .github/workflows/docker.yml
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Additional tag (e.g. v1.0, 20260718). 'latest' is always pushed."
+        required: false
+        default: ""
+
+env:
+  IMAGE_NAME: rust-dev
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute lowercase owner
+        id: owner
+        run: echo "name=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          # Always push :latest, plus an extra tag if provided via workflow_dispatch.
+          tags: |
+            ghcr.io/${{ steps.owner.outputs.name }}/${{ env.IMAGE_NAME }}:latest
+            ${{ github.event.inputs.tag != '' && format('ghcr.io/{0}/{1}:{2}', steps.owner.outputs.name, env.IMAGE_NAME, github.event.inputs.tag) || '' }}
+          # Pass the same defaults as the local Makefile build (override via workflow_dispatch
+          # is not supported here; edit the file or send a PR to change defaults).
+          build-args: |
+            SSH=true
+            CLAUDE_CODE=false
+            CODEX=false
+            OPENCODE=false
+            NODE=true
+            ZSH=true
+            PYTHON=true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

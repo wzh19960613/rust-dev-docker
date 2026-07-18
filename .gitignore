@@ -1,0 +1,10 @@
+# Secrets directory (exclude actual secrets, keep example)
+secrets/
+!secrets.example/
+
+# Environment file with actual values
+.arg
+
+# IDE / agent local data
+.claude/
+.zcode/
