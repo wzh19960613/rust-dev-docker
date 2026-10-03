@@ -1,7 +1,27 @@
 #!/bin/bash
 set -eu
 
-export PATH="/usr/local/cargo/bin:${HOME}/.local/bin:${HOME}/.bun/bin:${PATH}"
+export PATH="/usr/local/cargo/bin:${HOME}/.npm-global/bin:${HOME}/.local/bin:${HOME}/.bun/bin:${PATH}"
+
+# Redirect mutable tool dirs (npm globals/cache, bun, ~/.local) into the
+# persistent workspace volume so installed CLIs and caches survive container
+# recreation. Existing build-time content is adopted into the volume once.
+persist_tool_dirs() {
+    [ -d "${HOME}/workspace" ] || return 0
+    local tools="${HOME}/workspace/.tools" home_dir vol_dir
+    mkdir -p "${tools}/npm-global" "${tools}/npm-cache" "${tools}/bun" "${tools}/dot-local"
+    for pair in npm-global:.npm-global npm-cache:.npm bun:.bun dot-local:.local; do
+        vol_dir="${tools}/${pair%%:*}"
+        home_dir="${HOME}/${pair##*:}"
+        [ -L "$home_dir" ] && continue
+        if [ -d "$home_dir" ]; then
+            cp -a "$home_dir/." "$vol_dir/" 2>/dev/null || true
+            rm -rf "$home_dir"
+        fi
+        ln -sfn "$vol_dir" "$home_dir"
+    done
+}
+persist_tool_dirs
 
 # ZhiPu authentication and setup
 if [ -f /run/secrets/zp_key ]; then
@@ -75,6 +95,17 @@ if [ "${SSH:-true}" = "true" ]; then
         exit 1
     fi
     echo "root:$(cat /run/secrets/ssh_password)" | chpasswd
+    if [ -f /run/secrets/ssh_authorized_keys ]; then
+        mkdir -p /root/.ssh && chmod 700 /root/.ssh
+        touch /root/.ssh/authorized_keys
+        {
+            cat /root/.ssh/authorized_keys
+            cat /run/secrets/ssh_authorized_keys
+        } | sort -u > /root/.ssh/authorized_keys.tmp
+        mv /root/.ssh/authorized_keys.tmp /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+        echo "==> SSH public key auth configured"
+    fi
     mkdir -p /run/sshd
     /usr/sbin/sshd -e
     echo "==> SSH server started on port 22"

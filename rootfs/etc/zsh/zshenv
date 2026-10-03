@@ -1,5 +1,9 @@
 typeset -U path
 [[ -d /usr/local/cargo/bin ]] && path=(/usr/local/cargo/bin $path)
+[[ -d $HOME/.npm-global/bin ]] && path=($HOME/.npm-global/bin $path)
+[[ -d $HOME/.local/bin ]] && path=($HOME/.local/bin $path)
 export RUSTUP_HOME=/usr/local/rustup
 export CARGO_HOME=/usr/local/cargo
+export CARGO_INSTALL_ROOT=$HOME/.local
+export npm_config_prefix=$HOME/.npm-global
 export LANG=C.UTF-8

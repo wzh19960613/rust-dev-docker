@@ -156,15 +156,20 @@ Other Make targets: `stop`, `rm`, `clean`, `shell`.
 
 ### Using the container helper
 
-`container.sh` creates named containers with persistent volumes and can seed a project directory into `/root/workspace`. It sets `--hostname` (from the container name) and `--init` automatically:
+`container.sh` is the recommended way to run dev containers. It labels containers, picks a free SSH port automatically when `--ssh` is omitted, sets `--hostname`/`--init`/`--restart unless-stopped`, persists data in a named volume, and maintains SSH aliases:
 
 ```bash
-./container.sh --dir /path/to/your/project --ssh 2222
-./container.sh --name my-dev --ssh 2223
-./container.sh --base-name                  # name = "rust-dev"
+./container.sh --dir /path/to/your/project   # name & alias: rust-dev-<dirname>
+./container.sh --name my-dev                 # alias: my-dev
+./container.sh --image ghcr.io/wzh19960613/rust-dev:wasm --name my-wasm
+./container.sh ls                            # list containers: port, variant, dir
+./container.sh sync --name my-dev --dir .    # re-push host code into the container
+./container.sh prune                         # remove stopped containers (--volumes also drops their data)
 ```
 
-Options: `--dir/-d`, `--name/-n`, `--full-name/-f`, `--base-name`, `--ssh/-s`, `--proxy/-p`, `--volume/-v`.
+After creating/updating containers, `ssh <container-name>` just works: the script maintains `~/.ssh/rust-dev-containers.conf` and a one-time managed `Include` block in `~/.ssh/config`. Use the alias as the remote host in VS Code / Zed / your editor of choice — no more port juggling.
+
+Create options: `--dir/-d`, `--name/-n`, `--full-name/-f`, `--base-name`, `--ssh/-s` (default: first free port from 2222), `--proxy/-p`, `--volume/-v`, `--image/-i` (default `rust-dev`; a GHCR tag records the variant for `update.sh`).
 
 ---
 
@@ -175,6 +180,7 @@ Secrets are read from files mounted at `/run/secrets` (read-only). Two files are
 | File | Required | Purpose |
 |---|---|---|
 | `ssh_password` | Yes (when SSH enabled) | Sets the root password for SSH login |
+| `ssh_authorized_keys` | No | Public keys appended to `/root/.ssh/authorized_keys` for passwordless login |
 | `zp_key` | No | ZhiPu API key for AI assistant auth |
 
 See [`secrets.example/`](./secrets.example) for placeholders. **Never commit real secrets** — the `secrets/` directory is gitignored.
@@ -182,8 +188,9 @@ See [`secrets.example/`](./secrets.example) for placeholders. **Never commit rea
 On startup, `entrypoint.sh`:
 
 1. Authenticates ZhiPu and reloads Claude Code / OpenCode if installed (non-fatal: the container still boots if auth fails, e.g. offline)
-2. Writes proxy environment into `/etc/environment` for SSH sessions
-3. Starts the SSH server and re-execs into `sleep infinity` as PID 1
+2. Redirects `~/.npm-global`, `~/.npm`, `~/.bun` and `~/.local` into the persistent workspace volume — CLI tools installed later (`npm i -g`, `cargo install`, the Claude installer, …) survive container recreation, and `npm_config_prefix`/`CARGO_INSTALL_ROOT` are preset so installs land there automatically
+3. Installs `ssh_authorized_keys` when present, writes proxy environment into `/etc/environment` for SSH sessions
+4. Starts the SSH server and re-execs into `sleep infinity` as PID 1
 
 Secrets are never echoed to container logs.
 
@@ -191,12 +198,16 @@ Secrets are never echoed to container logs.
 
 ## Upgrading existing containers
 
-`update.sh` rebuilds the image and recreates all containers that use it, preserving name, hostname, ports, volumes, and environment:
+`update.sh` recreates containers on newer images, preserving name, hostname, ports, volumes, environment, labels and restart policy. By default it pulls each container's variant from GHCR (as recorded by `container.sh --image`), so together with the daily CI rebuild one command upgrades every container to the newest Rust:
 
 ```bash
-./update.sh --build         # rebuild + upgrade all containers
-./update.sh                 # upgrade to the most recently built image
+./update.sh                 # pull each container's GHCR variant + recreate
+./update.sh --build         # rebuild the local image + upgrade local containers
+./update.sh --local         # upgrade local containers to the last local build
+./update.sh --image NAME    # like --local, against a custom image name
 ```
+
+A Docker `HEALTHCHECK` (sshd reachability) is built into the image, so unhealthy containers show up in `docker ps` / `./container.sh ls`.
 
 ---
 

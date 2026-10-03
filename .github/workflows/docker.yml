@@ -211,12 +211,16 @@ jobs:
           echo "==> Smoke testing ${IMAGE}"
 
           SECRETS=$(mktemp -d)
+          KEYDIR=$(mktemp -d)
           PASS="ci-smoke-pass-$$"
           echo "$PASS" > "$SECRETS/ssh_password"
-          trap 'docker rm -f smoke >/dev/null 2>&1 || true; rm -rf "$SECRETS"' EXIT
+          ssh-keygen -t ed25519 -N "" -f "$KEYDIR/id_ed25519" >/dev/null 2>&1
+          cp "$KEYDIR/id_ed25519.pub" "$SECRETS/ssh_authorized_keys"
+          trap 'docker rm -f smoke >/dev/null 2>&1 || true; docker volume rm smoke-ws >/dev/null 2>&1 || true; rm -rf "$SECRETS" "$KEYDIR"' EXIT
 
           docker run -d --name smoke --hostname smoke-host --init \
-            -p 2222:22 -v "$SECRETS":/run/secrets:ro "$IMAGE" >/dev/null
+            -p 2222:22 -v "$SECRETS":/run/secrets:ro -v smoke-ws:/root/workspace \
+            "$IMAGE" >/dev/null
 
           ssh_run() {
             sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
@@ -229,6 +233,16 @@ jobs:
           ssh_run true >/dev/null
 
           fail()  { echo "SMOKE FAIL: $*" >&2; exit 1; }
+
+          HEALTH=""
+          for _ in $(seq 1 20); do
+            HEALTH=$(docker inspect -f '{{.State.Health.Status}}' smoke)
+            [ "$HEALTH" = healthy ] && break
+            sleep 3
+          done
+          [ "$HEALTH" = healthy ] || fail "healthcheck status: ${HEALTH:-none}"
+          ssh -i "$KEYDIR/id_ed25519" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+            -o LogLevel=ERROR -p 2222 root@localhost true || fail "public key auth"
 
           [ "$(ssh_run hostname)" = "smoke-host" ] || fail "hostname not applied"
           ssh_run 'command -v cargo'  >/dev/null || fail "cargo not on PATH"
@@ -246,6 +260,10 @@ jobs:
               ssh_run 'zsh -ic "whence -w compinit" 2>/dev/null' | grep -q function || fail "compinit not loaded"
               ssh_run 'command -v node'    >/dev/null || fail "node missing"
               ssh_run 'command -v python3' >/dev/null || fail "python3 missing"
+              ssh_run 'test -L /root/.local && test -L /root/.npm-global && test -L /root/.npm' \
+                || fail "tool dir redirection into workspace volume"
+              [ "$(ssh_run 'printf %s "$npm_config_prefix"')" = "/root/.npm-global" ] \
+                || fail "npm global prefix env"
               ;;
             slim)
               ssh_run 'printf %s "$SHELL"' | grep -q bash || fail "slim login shell should be bash"

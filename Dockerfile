@@ -256,4 +256,8 @@ VOLUME ["/run/secrets"]
 
 COPY --chmod=0755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
+# sshd reachable when SSH enabled; always healthy otherwise
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+    CMD ["bash", "-c", "[ \"${SSH:-true}\" != true ] || exec 3<>/dev/tcp/127.0.0.1/22"]
+
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

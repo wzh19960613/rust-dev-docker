@@ -156,15 +156,20 @@ make ssh                   # SSH 进入运行中的容器
 
 ### 使用容器辅助脚本
 
-`container.sh` 可创建带持久化卷的命名容器，并能把项目目录初始导入到 `/root/workspace`。它会自动设置 `--hostname`（取自容器名）和 `--init`：
+`container.sh` 是推荐的容器管理方式：给容器打标签、`--ssh` 省略时自动挑选空闲端口、自动设置 `--hostname`/`--init`/`--restart unless-stopped`、数据落在命名卷、并自动维护 SSH 别名：
 
 ```bash
-./container.sh --dir /path/to/your/project --ssh 2222
-./container.sh --name my-dev --ssh 2223
-./container.sh --base-name                  # 名字固定为 "rust-dev"
+./container.sh --dir /path/to/your/project   # 名称与别名: rust-dev-<目录名>
+./container.sh --name my-dev                 # 别名: my-dev
+./container.sh --image ghcr.io/wzh19960613/rust-dev:wasm --name my-wasm
+./container.sh ls                            # 列出容器: 端口、变体、目录
+./container.sh sync --name my-dev --dir .    # 把宿主机代码重新推入容器
+./container.sh prune                         # 清理已停止容器（--volumes 连数据卷一起删）
 ```
 
-支持的选项：`--dir/-d`、`--name/-n`、`--full-name/-f`、`--base-name`、`--ssh/-s`、`--proxy/-p`、`--volume/-v`。
+创建/更新容器后，直接 `ssh <容器名>` 即可连接：脚本会维护 `~/.ssh/rust-dev-containers.conf`，并在 `~/.ssh/config` 中一次性加入托管的 `Include` 块。在 VS Code / Zed 等编辑器的远程配置里直接填别名，不再需要记端口号。
+
+创建选项：`--dir/-d`、`--name/-n`、`--full-name/-f`、`--base-name`、`--ssh/-s`（默认从 2222 起自动找空闲端口）、`--proxy/-p`、`--volume/-v`、`--image/-i`（默认 `rust-dev`；填 GHCR tag 会记录变体供 `update.sh` 使用）。
 
 ---
 
@@ -175,6 +180,7 @@ Secrets 通过挂载到 `/run/secrets`（只读）的文件读取。支持两个
 | 文件 | 是否必需 | 用途 |
 |---|---|---|
 | `ssh_password` | 启用 SSH 时必需 | 设置 root 的 SSH 登录密码 |
+| `ssh_authorized_keys` | 否 | 公钥内容，追加到 `/root/.ssh/authorized_keys`，实现免密登录 |
 | `zp_key` | 否 | 智谱 AI Key，用于 AI 助手鉴权 |
 
 占位示例见 [`secrets.example/`](./secrets.example)。**切勿提交真实 secrets**——`secrets/` 目录已被 gitignore。
@@ -182,8 +188,9 @@ Secrets 通过挂载到 `/run/secrets`（只读）的文件读取。支持两个
 启动时 `entrypoint.sh` 会：
 
 1. 完成智谱鉴权，并在已安装时 reload Claude Code / OpenCode（失败不致命：如离线时容器照常启动）
-2. 把代理环境写入 `/etc/environment` 供 SSH 会话使用
-3. 启动 SSH 服务，并以 `exec sleep infinity` 作为 PID 1 常驻
+2. 把 `~/.npm-global`、`~/.npm`、`~/.bun`、`~/.local` 重定向到持久化 workspace 卷——之后安装的 CLI 工具（`npm i -g`、`cargo install`、Claude 安装器等）在容器重建后依然存在；`npm_config_prefix`/`CARGO_INSTALL_ROOT` 已预设，安装会自动落到这些目录
+3. 安装 `ssh_authorized_keys`（如存在），把代理环境写入 `/etc/environment` 供 SSH 会话使用
+4. 启动 SSH 服务，并以 `exec sleep infinity` 作为 PID 1 常驻
 
 Secrets 不会被输出到容器日志。
 
@@ -191,12 +198,16 @@ Secrets 不会被输出到容器日志。
 
 ## 升级已有容器
 
-`update.sh` 会重建镜像并重建所有使用该镜像的容器，保留容器名、hostname、端口、卷、环境变量：
+`update.sh` 会在更新的镜像上重建容器，保留容器名、hostname、端口、卷、环境变量、标签与重启策略。默认从 GHCR 拉取各容器创建时记录的变体（`container.sh --image` 记录），配合 CI 的每日自动构建，一条命令即可把所有容器升到最新 Rust：
 
 ```bash
-./update.sh --build         # 重建镜像 + 升级所有容器
-./update.sh                 # 升级到最近一次构建的镜像
+./update.sh                 # 拉取各容器的 GHCR 变体并重建
+./update.sh --build         # 重建本地镜像 + 升级本地容器
+./update.sh --local         # 用最近一次本地构建升级本地容器
+./update.sh --image NAME    # 同 --local，指定镜像名
 ```
+
+镜像内置 Docker `HEALTHCHECK`（sshd 可达性），异常容器会直接反映在 `docker ps` / `./container.sh ls` 中。
 
 ---
 

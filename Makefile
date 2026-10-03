@@ -62,6 +62,7 @@ run:
 	--name $(CONTAINER_NAME) \
 	--hostname $(CONTAINER_NAME) \
 	--init \
+	--restart unless-stopped \
 	-v $(SECRETS_DIR):/run/secrets:ro \
 	-v $(CONTAINER_NAME)-data:/root/workspace \
 	$(IMAGE_NAME)
@@ -80,6 +81,9 @@ clean:
 
 shell:
 	docker exec -it $(CONTAINER_NAME) sh -c 'command -v zsh >/dev/null 2>&1 && exec zsh -l || exec bash -l'
+
+ls:
+	@bash container.sh ls
 
 # 创建 secrets 目录和示例文件
 init-secrets:
