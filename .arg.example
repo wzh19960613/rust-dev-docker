@@ -18,6 +18,10 @@ NODE=true
 ZSH=true
 # Python: true (apt default python3 + pip + venv), false, or version (e.g. 3.11)
 PYTHON=true
+# WASM: false | targets (wasm32 + WASI std) | tools (targets + wasm-pack)
+WASM=false
+# ANDROID: false | targets (rustup android ABIs; linking needs an external NDK)
+ANDROID=false
 
 # Makefile Configuration
 IMAGE_NAME=rust-dev

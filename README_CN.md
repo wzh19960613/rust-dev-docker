@@ -2,7 +2,7 @@
 
 [![Build and Push Docker Image](https://github.com/wzh19960613/rust-dev-docker/actions/workflows/docker.yml/badge.svg)](https://github.com/wzh19960613/rust-dev-docker/actions/workflows/docker.yml)
 
-用于 Rust 开发的多架构（amd64 + arm64）Docker 镜像，可选集成 AI 编程助手、Node.js、Zsh、Python 等工具链。
+用于 Rust 开发的多架构（amd64 + arm64）Docker 镜像，可选集成 AI 编程助手、Node.js、Zsh、Python、WASM 与 Android 目标等工具链。
 
 English documentation: [README.md](./README.md)
 
@@ -10,21 +10,22 @@ English documentation: [README.md](./README.md)
 
 ## 预构建镜像
 
-通过 GitHub Actions 自动构建多架构镜像，发布到 GitHub Container Registry：
+通过 GitHub Actions 自动构建多架构镜像，发布到 GitHub Container Registry。每次构建都会附带所含 Rust 版本的 tag，并有每日定时任务在新 stable 发布后自动重建。
 
-**`ghcr.io/wzh19960613/rust-dev:latest`**
+| Tag | 内容 |
+|---|---|
+| `latest` / `rust-<版本>` | Rust + SSH + Node.js + Zsh + Python |
+| `slim` / `slim-rust-<版本>` | 仅 Rust + SSH |
+| `wasm` / `wasm-rust-<版本>` | `latest` + wasm32/WASI 目标 + wasm-pack |
+| `android` / `android-rust-<版本>` | `latest` + Android rustup 目标（链接需外部 NDK） |
+
+例如：`ghcr.io/wzh19960613/rust-dev:latest`、`ghcr.io/wzh19960613/rust-dev:rust-1.99.0`、`ghcr.io/wzh19960613/rust-dev:wasm`。
 
 - 架构：`linux/amd64`、`linux/arm64`（Docker 自动选择）
-- 每次 push 到 `main` 分支触发重新构建
+- 每次 push 到 `main` 重新构建；每日定时检查新的 Rust stable 版本并自动构建
+- `ci/**` 分支的构建会带 `-ci-<分支名>` tag 后缀，不会覆盖 `latest`
 
-### 拉取
-
-```bash
-# 公共镜像，直接拉取
-docker pull ghcr.io/wzh19960613/rust-dev:latest
-```
-
-### 运行
+### 拉取与运行
 
 ```bash
 # 准备 secrets（SSH 密码 + 可选的智谱 API Key）
@@ -32,8 +33,11 @@ mkdir -p ./secrets
 echo "你的SSH密码" > ./secrets/ssh_password
 echo "你的智谱API_Key" > ./secrets/zp_key   # 可选
 
-# 启动容器
+# 启动容器（--hostname 让 shell 提示符显示容器名）
 docker run -d \
+  --name rust-dev \
+  --hostname rust-dev \
+  --init \
   -p 2222:22 \
   -v "$PWD/secrets:/run/secrets:ro" \
   -v rust-dev-data:/root/workspace \
@@ -43,32 +47,51 @@ docker run -d \
 ssh -p 2222 root@localhost
 ```
 
+`./container.sh`（见下文）会自动传 `--hostname` 和 `--init`。
+
 ---
 
 ## 镜像内容
 
-基于官方 `rust:latest` 镜像，预装以下工具：
+基于官方 `rust` 镜像，预装以下工具：
 
 - **Rust 工具链**：`rustc`、`cargo`、`rustfmt`、`clippy`、`rust-analyzer`
 - **SSH 服务**：已开启密码登录，通过挂载的 secret 文件配置
 - **Node.js**：通过 NodeSource 安装（默认最新 LTS）
 - **Zsh**：设为 root 用户的默认登录 shell（SSH 登录直接进 zsh）
 - **Python 3**：含 `pip` 和 `venv`
+- **WASM / Android 目标**：构建时可选（见下文）
 - **AI 编程工具**（构建时可选）：Claude Code、OpenCode、Codex
 
-所有工具都可通过构建参数开关或锁定版本（见下文）。
+### Shell 体验
+
+SSH 登录进入的是配置完整的 zsh，而不是裸 shell：
+
+- Tab 补全带选择菜单（`compinit`）、大小写不敏感匹配
+- 跨会话持久化历史——当 `/root/workspace` 是卷时，历史文件存于其中，容器升级也不丢
+- 彩色提示符 `用户@容器名 路径 (git分支)`——传 `--hostname` 后即显示容器名
+- Home/End/Delete/Ctrl+方向键均已绑定，`ls`/`grep` 有颜色
+- 全局 `C.UTF-8` locale（中文文件名不会被加引号/转义），SSH 客户端的 `COLORTERM` 会被接受（真彩 CLI 不再降级）
+
+环境变量（cargo 的 `PATH`、`RUSTUP_HOME`、`CARGO_HOME`、`LANG`）通过 `/etc/zsh/zshenv` 与 `/etc/profile.d/` 下发，对非交互 shell 和 `docker exec` 同样生效。
 
 ---
 
 ## 构建配置
 
-Dockerfile 接受多个构建参数。其中 `NODE`、`ZSH`、`PYTHON` 三个参数共用统一的"三态"语义：
+Dockerfile 接受多个构建参数。`NODE`、`ZSH`、`PYTHON` 共用"三态"语义；`WASM`、`ANDROID` 使用命名档位：
 
-| 取值 | 含义 |
+| 取值（`NODE`/`ZSH`/`PYTHON`） | 含义 |
 |---|---|
 | `false` | 不安装 |
 | `true` | 安装最新版本 |
 | `<版本字符串>` | 安装指定版本 |
+
+| 取值（`WASM`/`ANDROID`） | 含义 |
+|---|---|
+| `false` | 不包含 |
+| `targets` | 仅 rustup 目标（wasm32 + WASI，或 4 个 Android ABI） |
+| `tools`（仅 WASM） | `targets` + `wasm-pack` |
 
 ### 构建参数一览
 
@@ -79,6 +102,8 @@ Dockerfile 接受多个构建参数。其中 `NODE`、`ZSH`、`PYTHON` 三个参
 | `NODE` | `true` | Node.js：`true` / `false` / `22` / `22.5.0` |
 | `ZSH` | `true` | Zsh：`true` / `false` / `5.9`（apt 版本约束） |
 | `PYTHON` | `true` | Python：`true` / `false` / `3.11` |
+| `WASM` | `false` | WASM：`false` / `targets` / `tools` |
+| `ANDROID` | `false` | Android：`false` / `targets`（链接需外部 NDK） |
 | `CLAUDE_CODE` | `false` | 安装 Claude Code |
 | `CODEX` | `false` | 安装 OpenAI Codex |
 | `OPENCODE` | `false` | 安装 OpenCode + oh-my-opencode |
@@ -92,6 +117,9 @@ Dockerfile 接受多个构建参数。其中 `NODE`、`ZSH`、`PYTHON` 三个参
 ```bash
 # 默认配置：含 SSH + Node + Zsh + Python 的完整镜像
 docker build -t rust-dev .
+
+# 加 WASM 工具与 Android 目标
+docker build --build-arg WASM=tools --build-arg ANDROID=targets -t rust-dev:cross .
 
 # 锁定指定版本
 docker build \
@@ -120,7 +148,7 @@ docker build \
 cp .arg.example .arg       # 按需修改各项值
 make init-secrets          # 用占位符创建 ./secrets 目录
 make build                 # 构建镜像
-make run                   # 运行容器
+make run                   # 运行容器（自动加 --hostname/--init 和数据卷）
 make ssh                   # SSH 进入运行中的容器
 ```
 
@@ -128,7 +156,7 @@ make ssh                   # SSH 进入运行中的容器
 
 ### 使用容器辅助脚本
 
-`container.sh` 可创建带持久化卷的命名容器，并能把项目目录初始导入到 `/root/workspace`：
+`container.sh` 可创建带持久化卷的命名容器，并能把项目目录初始导入到 `/root/workspace`。它会自动设置 `--hostname`（取自容器名）和 `--init`：
 
 ```bash
 ./container.sh --dir /path/to/your/project --ssh 2222
@@ -153,15 +181,17 @@ Secrets 通过挂载到 `/run/secrets`（只读）的文件读取。支持两个
 
 启动时 `entrypoint.sh` 会：
 
-1. 自动选择 `npx`（已装 Node）或 `bunx` 作为 JS 运行时，可用 `-e USE_NODE=false` 覆盖
-2. 完成智谱鉴权，并在已安装时 reload Claude Code / OpenCode
-3. 启动 SSH 服务
+1. 完成智谱鉴权，并在已安装时 reload Claude Code / OpenCode（失败不致命：如离线时容器照常启动）
+2. 把代理环境写入 `/etc/environment` 供 SSH 会话使用
+3. 启动 SSH 服务，并以 `exec sleep infinity` 作为 PID 1 常驻
+
+Secrets 不会被输出到容器日志。
 
 ---
 
 ## 升级已有容器
 
-`update.sh` 会重建镜像并重建所有使用该镜像的容器，保留容器名、端口、卷、环境变量：
+`update.sh` 会重建镜像并重建所有使用该镜像的容器，保留容器名、hostname、端口、卷、环境变量：
 
 ```bash
 ./update.sh --build         # 重建镜像 + 升级所有容器
@@ -172,7 +202,14 @@ Secrets 通过挂载到 `/run/secrets`（只读）的文件读取。支持两个
 
 ## CI / 多架构构建
 
-[`.github/workflows/docker.yml`](./.github/workflows/docker.yml) 在每次 push 到 `main` 时，通过 QEMU + Buildx 并行构建 `linux/amd64` + `linux/arm64`，并把单一的多架构 manifest 推送到 GHCR。也支持手动触发（Actions 页面 → "Run workflow"），可附带额外的 tag。
+[`.github/workflows/docker.yml`](./.github/workflows/docker.yml)：
+
+- 每次 push 到 `main` 时，通过 QEMU + Buildx 并行构建全部四个变体（`latest`、`slim`、`wasm`、`android`）的 `linux/amd64` + `linux/arm64` 镜像，并附带 Rust 版本 tag（如 `rust-1.99.0`、`wasm-rust-1.99.0`）推送到 GHCR
+- 每日定时任务检查是否有新的 Rust stable：有新版本才构建（版本 tag 已存在则直接跳过）
+- `ci/**` 分支的 push 也会构建，但 tag 带 `-ci-<分支名>` 后缀，测试构建绝不会覆盖 `latest`
+- `smoke` 任务会真实启动每个变体并通过 SSH 验证：zsh 登录 shell、`C.UTF-8` locale、退格键绑定、补全加载、`ls` 颜色、hostname、cargo 在 `PATH` 上，以及各变体专属内容（wasm 目标、Android 目标等）
+
+也支持手动触发（Actions 页面 → "Run workflow"），可为 full 镜像附带额外的 tag。
 
 ---
 

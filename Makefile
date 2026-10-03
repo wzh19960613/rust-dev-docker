@@ -34,6 +34,12 @@ endif
 ifdef PYTHON
 	BUILD_ARGS += --build-arg PYTHON=$(PYTHON)
 endif
+ifdef WASM
+	BUILD_ARGS += --build-arg WASM=$(WASM)
+endif
+ifdef ANDROID
+	BUILD_ARGS += --build-arg ANDROID=$(ANDROID)
+endif
 ifdef SSH
 	BUILD_ARGS += --build-arg SSH=$(SSH)
 endif
@@ -52,10 +58,13 @@ build:
 
 run:
 	docker run -d \
-		-p $(SSH_PORT):22 \
-		--name $(CONTAINER_NAME) \
-		-v $(SECRETS_DIR):/run/secrets:ro \
-		$(IMAGE_NAME)
+	-p $(SSH_PORT):22 \
+	--name $(CONTAINER_NAME) \
+	--hostname $(CONTAINER_NAME) \
+	--init \
+	-v $(SECRETS_DIR):/run/secrets:ro \
+	-v $(CONTAINER_NAME)-data:/root/workspace \
+	$(IMAGE_NAME)
 
 ssh:
 	ssh root@localhost -p $(SSH_PORT)
@@ -70,7 +79,7 @@ clean:
 	docker rmi $(IMAGE_NAME)
 
 shell:
-	docker exec -it $(CONTAINER_NAME) bash
+	docker exec -it $(CONTAINER_NAME) sh -c 'command -v zsh >/dev/null 2>&1 && exec zsh -l || exec bash -l'
 
 # 创建 secrets 目录和示例文件
 init-secrets:

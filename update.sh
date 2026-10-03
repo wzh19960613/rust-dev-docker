@@ -56,6 +56,11 @@ for NAME in $(docker ps -a --format '{{.Names}}'); do
         ssh-keygen -R "[localhost]:${SSH_PORT}" 2>/dev/null || true
     fi
 
+    MISC_ARGS=()
+    CONTAINER_HOSTNAME=$(docker inspect --format='{{.Config.Hostname}}' "$NAME")
+    [ -n "$CONTAINER_HOSTNAME" ] && MISC_ARGS+=(--hostname "$CONTAINER_HOSTNAME")
+    [ "$(docker inspect --format='{{.HostConfig.Init}}' "$NAME")" = "true" ] && MISC_ARGS+=(--init)
+
     # Collect port bindings into array
     PORT_ARGS=()
     while IFS= read -r port; do
@@ -79,7 +84,12 @@ for NAME in $(docker ps -a --format '{{.Names}}'); do
     docker stop "$NAME" >/dev/null 2>&1 || true
     docker rm "$NAME" >/dev/null
 
-    docker create --name "$NAME" "${PORT_ARGS[@]}" "${VOL_ARGS[@]}" "${ENV_ARGS[@]}" "$IMAGE_NAME" >/dev/null
+    docker create --name "$NAME" \
+        ${MISC_ARGS[@]+"${MISC_ARGS[@]}"} \
+        ${PORT_ARGS[@]+"${PORT_ARGS[@]}"} \
+        ${VOL_ARGS[@]+"${VOL_ARGS[@]}"} \
+        ${ENV_ARGS[@]+"${ENV_ARGS[@]}"} \
+        "$IMAGE_NAME" >/dev/null
 
     if [ "$WAS_RUNNING" = "true" ]; then
         docker start "$NAME" >/dev/null

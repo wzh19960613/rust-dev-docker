@@ -2,27 +2,116 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'ci/**']
     paths:
       - Dockerfile
       - entrypoint.sh
+      - rootfs/**
       - .github/workflows/docker.yml
+  schedule:
+    - cron: "30 2 * * *"
   workflow_dispatch:
     inputs:
       tag:
-        description: "Additional tag (e.g. v1.0, 20260718). 'latest' is always pushed."
+        description: "Extra tag for the full image, main only (e.g. v1.0)"
         required: false
         default: ""
 
 env:
   IMAGE_NAME: rust-dev
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      rust-version: ${{ steps.meta.outputs.rust-version }}
+      rust-tag: ${{ steps.meta.outputs.rust-tag }}
+      push-version-tag: ${{ steps.meta.outputs.push-version-tag }}
+      suffix: ${{ steps.meta.outputs.suffix }}
+      skip: ${{ steps.check.outputs.skip }}
+    steps:
+      - name: Resolve Rust version, base tag and tag suffix
+        id: meta
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          curl -fsSL https://static.rust-lang.org/dist/channel-rust-stable.toml -o /tmp/channel.toml
+          VER=$(awk -F'"' '/^\[pkg\.rust\]/{f=1} f && /^version/{split($2,a," "); print a[1]; exit}' /tmp/channel.toml)
+          [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "cannot resolve stable rust version" >&2; exit 1; }
+
+          if curl -fsSI "https://hub.docker.com/v2/repositories/library/rust/tags/${VER}" >/dev/null 2>&1; then
+            RUST_TAG="$VER"; PUSH_VER=true
+          else
+            echo "rust:${VER} not on Docker Hub yet, falling back to :latest" >&2
+            RUST_TAG=latest; PUSH_VER=false
+          fi
+
+          if [ "$REF_NAME" = "main" ]; then
+            SUFFIX=""
+          else
+            SUFFIX="-$(printf '%s' "$REF_NAME" \
+              | tr '[:upper:]' '[:lower:]' | sed -e 's|[^a-z0-9.-]|-|g' | cut -c1-24)"
+          fi
+
+          {
+            echo "rust-version=$VER"
+            echo "rust-tag=$RUST_TAG"
+            echo "push-version-tag=$PUSH_VER"
+            echo "suffix=$SUFFIX"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Skip if this Rust version is already published (schedule only)
+        id: check
+        if: github.event_name == 'schedule'
+        run: |
+          OWNER=$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')
+          VER='${{ steps.meta.outputs.rust-version }}'
+          TOKEN=$(curl -fsSL "https://ghcr.io/token?scope=repository:${OWNER}/${IMAGE_NAME}:pull" | jq -r .token)
+          CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json" \
+            "https://ghcr.io/v2/${OWNER}/${IMAGE_NAME}/manifests/rust-${VER}")
+          if [ "$CODE" = "200" ]; then
+            echo "rust-${VER} already published, nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: full
+            tag: latest
+            args: |
+              WASM=false
+              ANDROID=false
+          - preset: slim
+            tag: slim
+            args: |
+              NODE=false
+              ZSH=false
+              PYTHON=false
+          - preset: wasm
+            tag: wasm
+            args: |
+              WASM=tools
+          - preset: android
+            tag: android
+            args: |
+              ANDROID=targets
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -40,9 +129,34 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute lowercase owner
-        id: owner
-        run: echo "name=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - name: Compute image tags
+        id: tags
+        env:
+          OWNER_RAW: ${{ github.repository_owner }}
+          VARIANT: ${{ matrix.tag }}
+          SUFFIX: ${{ needs.resolve.outputs.suffix }}
+          RUST_VER: ${{ needs.resolve.outputs.rust-version }}
+          PUSH_VER: ${{ needs.resolve.outputs.push-version-tag }}
+          EXTRA: ${{ github.event.inputs.tag }}
+        run: |
+          OWNER=$(printf '%s' "$OWNER_RAW" | tr '[:upper:]' '[:lower:]')
+          REPO="ghcr.io/${OWNER}/${IMAGE_NAME}"
+          TAGS="${REPO}:${VARIANT}${SUFFIX}"
+          if [ "$PUSH_VER" = "true" ] && [ -z "$SUFFIX" ]; then
+            if [ "$VARIANT" = "latest" ]; then
+              TAGS="${TAGS}"$'\n'"${REPO}:rust-${RUST_VER}"
+            else
+              TAGS="${TAGS}"$'\n'"${REPO}:${VARIANT}-rust-${RUST_VER}"
+            fi
+          fi
+          if [ -n "$EXTRA" ] && [ "$VARIANT" = "latest" ] && [ -z "$SUFFIX" ]; then
+            TAGS="${TAGS}"$'\n'"${REPO}:${EXTRA}"
+          fi
+          {
+            echo "tags<<TAGS_EOF"
+            printf '%s\n' "$TAGS"
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Build and push (multi-arch)
         uses: docker/build-push-action@v7
@@ -50,19 +164,100 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          # Always push :latest, plus an extra tag if provided via workflow_dispatch.
-          tags: |
-            ghcr.io/${{ steps.owner.outputs.name }}/${{ env.IMAGE_NAME }}:latest
-            ${{ github.event.inputs.tag != '' && format('ghcr.io/{0}/{1}:{2}', steps.owner.outputs.name, env.IMAGE_NAME, github.event.inputs.tag) || '' }}
-          # Pass the same defaults as the local Makefile build (override via workflow_dispatch
-          # is not supported here; edit the file or send a PR to change defaults).
+          tags: ${{ steps.tags.outputs.tags }}
           build-args: |
-            SSH=true
-            CLAUDE_CODE=false
-            CODEX=false
-            OPENCODE=false
-            NODE=true
-            ZSH=true
-            PYTHON=true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            RUST_TAG=${{ needs.resolve.outputs.rust-tag }}
+            ${{ matrix.args }}
+          cache-from: type=gha,scope=${{ matrix.preset }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.preset }}
+
+  smoke:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - preset: full
+            tag: latest
+            checks: zsh
+          - preset: slim
+            tag: slim
+            checks: slim
+          - preset: wasm
+            tag: wasm
+            checks: wasm
+          - preset: android
+            tag: android
+            checks: android
+    steps:
+      - name: Pull, boot and SSH-verify (${{ matrix.preset }})
+        env:
+          OWNER_RAW: ${{ github.repository_owner }}
+          VARIANT: ${{ matrix.tag }}
+          SUFFIX: ${{ needs.resolve.outputs.suffix }}
+          RUST_VER: ${{ needs.resolve.outputs.rust-version }}
+          RUST_TAG: ${{ needs.resolve.outputs.rust-tag }}
+          CHECKS: ${{ matrix.checks }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq >/dev/null && sudo apt-get install -y -qq sshpass >/dev/null
+
+          OWNER=$(printf '%s' "$OWNER_RAW" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${OWNER}/${IMAGE_NAME}:${VARIANT}${SUFFIX}"
+          echo "==> Smoke testing ${IMAGE}"
+
+          SECRETS=$(mktemp -d)
+          PASS="ci-smoke-pass-$$"
+          echo "$PASS" > "$SECRETS/ssh_password"
+          trap 'docker rm -f smoke >/dev/null 2>&1 || true; rm -rf "$SECRETS"' EXIT
+
+          docker run -d --name smoke --hostname smoke-host --init \
+            -p 2222:22 -v "$SECRETS":/run/secrets:ro "$IMAGE" >/dev/null
+
+          ssh_run() {
+            sshpass -p "$PASS" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -o LogLevel=ERROR -p 2222 root@localhost "$@"
+          }
+          for _ in $(seq 1 45); do
+            ssh_run true >/dev/null 2>&1 && break
+            sleep 2
+          done
+          ssh_run true >/dev/null
+
+          fail()  { echo "SMOKE FAIL: $*" >&2; exit 1; }
+
+          [ "$(ssh_run hostname)" = "smoke-host" ] || fail "hostname not applied"
+          ssh_run 'command -v cargo'  >/dev/null || fail "cargo not on PATH"
+          ssh_run 'command -v rustc'  >/dev/null || fail "rustc not on PATH"
+          if [ "$RUST_TAG" = "$RUST_VER" ]; then
+            ssh_run 'rustc --version' | grep -F "$RUST_VER" >/dev/null || fail "rustc version mismatch"
+          fi
+
+          case "$CHECKS" in
+            zsh)
+              ssh_run 'printf %s "$SHELL"' | grep -q 'zsh$' || fail "login shell is not zsh"
+              [ "$(ssh_run 'printf %s "${LANG:-}"')" = "C.UTF-8" ] || fail "LANG not set to C.UTF-8"
+              ssh_run 'zsh -ic "bindkey \"^?\"" 2>/dev/null' | grep -q backward-delete-char || fail "backspace binding"
+              ssh_run 'zsh -ic "alias ls" 2>/dev/null' | grep -q -- --color=auto || fail "ls color alias"
+              ssh_run 'zsh -ic "whence -w compinit" 2>/dev/null' | grep -q function || fail "compinit not loaded"
+              ssh_run 'command -v node'    >/dev/null || fail "node missing"
+              ssh_run 'command -v python3' >/dev/null || fail "python3 missing"
+              ;;
+            slim)
+              ssh_run 'printf %s "$SHELL"' | grep -q bash || fail "slim login shell should be bash"
+              if ssh_run 'command -v zsh' >/dev/null 2>&1; then fail "slim should not contain zsh"; fi
+              if ssh_run 'command -v node' >/dev/null 2>&1; then fail "slim should not contain node"; fi
+              ;;
+            wasm)
+              ssh_run 'rustup target list --installed' | grep -q wasm32-unknown-unknown || fail "wasm32 target missing"
+              ssh_run 'wasm-pack --version' >/dev/null || fail "wasm-pack missing"
+              ;;
+            android)
+              ssh_run 'rustup target list --installed' | grep -q aarch64-linux-android || fail "android target missing"
+              ;;
+          esac
+          echo "==> Smoke passed for variant '$CHECKS'"

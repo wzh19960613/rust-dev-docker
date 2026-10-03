@@ -11,6 +11,7 @@ VOLUME_NAME=""
 CONTAINER_NAME=""
 FULL_NAME=""
 PROXY_URL=""
+NAME_SOURCE=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -19,14 +20,29 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --name|-n)
+            if [ -n "$NAME_SOURCE" ]; then
+                echo "Error: --name, --full-name, and --base-name are mutually exclusive"
+                exit 1
+            fi
+            NAME_SOURCE="--name"
             CONTAINER_NAME="$2"
             shift 2
             ;;
         --full-name|-f)
+            if [ -n "$NAME_SOURCE" ]; then
+                echo "Error: --name, --full-name, and --base-name are mutually exclusive"
+                exit 1
+            fi
+            NAME_SOURCE="--full-name"
             FULL_NAME="$2"
             shift 2
             ;;
         --base-name)
+            if [ -n "$NAME_SOURCE" ]; then
+                echo "Error: --name, --full-name, and --base-name are mutually exclusive"
+                exit 1
+            fi
+            NAME_SOURCE="--base-name"
             FULL_NAME="rust-dev"
             shift
             ;;
@@ -50,12 +66,6 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-# --name, --full-name, and --base-name are mutually exclusive
-if [ -n "$CONTAINER_NAME" ] && [ -n "$FULL_NAME" ]; then
-    echo "Error: --name, --full-name, and --base-name are mutually exclusive"
-    exit 1
-fi
-
 # Determine container name
 if [ -n "$FULL_NAME" ]; then
     CONTAINER_NAME="$FULL_NAME"
@@ -72,6 +82,10 @@ elif [ -z "$CONTAINER_NAME" ]; then
 fi
 
 VOLUME_NAME="${CUSTOM_VOLUME:-${CONTAINER_NAME}}"
+CONTAINER_HOSTNAME=$(printf '%s' "$CONTAINER_NAME" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9.-' '-')
+case "$CONTAINER_HOSTNAME" in
+    ''|[^a-z0-9]*) CONTAINER_HOSTNAME="h${CONTAINER_HOSTNAME}" ;;
+esac
 echo "==> Container name: ${CONTAINER_NAME}"
 
 # Check if directory exists (if dir_path is provided)
@@ -138,6 +152,8 @@ fi
 
 # Create the container with secrets mounted and data volume
 docker create --name "${CONTAINER_NAME}" \
+    --hostname "${CONTAINER_HOSTNAME}" \
+    --init \
     -p "${SSH_PORT}:22" \
     -p "8080:8080" \
     -v "${SECRETS_DIR}:/run/secrets:ro" \

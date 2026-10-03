@@ -2,7 +2,7 @@
 
 [![Build and Push Docker Image](https://github.com/wzh19960613/rust-dev-docker/actions/workflows/docker.yml/badge.svg)](https://github.com/wzh19960613/rust-dev-docker/actions/workflows/docker.yml)
 
-A multi-architecture (amd64 + arm64) Docker image for Rust development, with optional tooling for AI coding assistants, Node.js, Zsh, and Python.
+A multi-architecture (amd64 + arm64) Docker image for Rust development, with optional tooling for AI coding assistants, Node.js, Zsh, Python, WASM and Android targets.
 
 中文文档：[README_CN.md](./README_CN.md)
 
@@ -10,21 +10,22 @@ A multi-architecture (amd64 + arm64) Docker image for Rust development, with opt
 
 ## Prebuilt image
 
-Multi-arch images are built automatically via GitHub Actions and published to GitHub Container Registry:
+Multi-arch images are built automatically via GitHub Actions and published to GitHub Container Registry. Every build is tagged with the Rust version it contains, and a daily scheduled job rebuilds automatically when a new Rust stable is released.
 
-**`ghcr.io/wzh19960613/rust-dev:latest`**
+| Tag | Content |
+|---|---|
+| `latest` / `rust-<ver>` | Rust + SSH + Node.js + Zsh + Python |
+| `slim` / `slim-rust-<ver>` | Rust + SSH only |
+| `wasm` / `wasm-rust-<ver>` | `latest` + wasm32/WASI targets + wasm-pack |
+| `android` / `android-rust-<ver>` | `latest` + Android rustup targets (linking needs an external NDK) |
+
+For example: `ghcr.io/wzh19960613/rust-dev:latest`, `ghcr.io/wzh19960613/rust-dev:rust-1.99.0`, `ghcr.io/wzh19960613/rust-dev:wasm`.
 
 - Architectures: `linux/amd64`, `linux/arm64` (auto-selected by Docker)
-- Built from this repo on every push to `main`
+- Rebuilt on every push to `main`, and daily for new Rust stable releases
+- Branches matching `ci/**` build with a `-ci-<branch>` tag suffix and never overwrite `latest`
 
-### Pull
-
-```bash
-# Public package — pull directly
-docker pull ghcr.io/wzh19960613/rust-dev:latest
-```
-
-### Run
+### Pull & run
 
 ```bash
 # Prepare secrets (SSH password + optional ZhiPu API key)
@@ -32,8 +33,11 @@ mkdir -p ./secrets
 echo "your_ssh_password" > ./secrets/ssh_password
 echo "your_zhipu_api_key" > ./secrets/zp_key   # optional
 
-# Start the container
+# Start the container (--hostname makes the shell prompt show the container name)
 docker run -d \
+  --name rust-dev \
+  --hostname rust-dev \
+  --init \
   -p 2222:22 \
   -v "$PWD/secrets:/run/secrets:ro" \
   -v rust-dev-data:/root/workspace \
@@ -43,32 +47,51 @@ docker run -d \
 ssh -p 2222 root@localhost
 ```
 
+`./container.sh` (see below) passes `--hostname` and `--init` automatically.
+
 ---
 
 ## What's inside
 
-Based on the official `rust:latest` image, with these preinstalled:
+Based on the official `rust` image, with these preinstalled:
 
 - **Rust toolchain**: `rustc`, `cargo`, `rustfmt`, `clippy`, `rust-analyzer`
 - **SSH server**: password auth enabled, configurable via mounted secret
 - **Node.js**: via NodeSource (default: latest LTS)
 - **Zsh**: set as root's default login shell (SSH sessions land in zsh)
 - **Python 3**: with `pip` and `venv`
+- **WASM / Android targets**: opt-in at build time (see below)
 - **AI coding tools** (opt-in at build time): Claude Code, OpenCode, Codex
 
-All tools can be toggled or version-pinned via build args (see below).
+### Shell experience
+
+SSH sessions land in a properly configured zsh (not a bare one):
+
+- Tab completion with a selection menu (`compinit`), case-insensitive matching
+- Persistent history across sessions — stored in `/root/workspace` when that path is a volume, so it survives container upgrades
+- Colored prompt `user@container path (git-branch)` — shows the container name when you pass `--hostname`
+- Home/End/Delete/Ctrl+Arrow keys bound for common terminals, `ls`/`grep` colors
+- `C.UTF-8` locale everywhere (no quoted/escaped output for non-ASCII filenames), and `COLORTERM` is accepted from your SSH client for true-color CLIs
+
+Environment (cargo on `PATH`, `RUSTUP_HOME`, `CARGO_HOME`, `LANG`) is set via `/etc/zsh/zshenv` and `/etc/profile.d/`, so it also applies to non-interactive shells and `docker exec`.
 
 ---
 
 ## Build configuration
 
-The Dockerfile accepts build args. Three of them — `NODE`, `ZSH`, `PYTHON` — share a uniform "tri-state" semantic:
+The Dockerfile accepts build args. `NODE`, `ZSH`, `PYTHON` share a "tri-state" semantic; `WASM` and `ANDROID` use named levels:
 
-| Value | Meaning |
+| Value (`NODE`/`ZSH`/`PYTHON`) | Meaning |
 |---|---|
 | `false` | Not installed |
 | `true` | Install the latest version |
 | `<version-string>` | Install the specified version |
+
+| Value (`WASM`/`ANDROID`) | Meaning |
+|---|---|
+| `false` | Not included |
+| `targets` | rustup targets only (wasm32 + WASI, or the 4 Android ABIs) |
+| `tools` (WASM only) | `targets` + `wasm-pack` |
 
 ### Build arguments
 
@@ -79,6 +102,8 @@ The Dockerfile accepts build args. Three of them — `NODE`, `ZSH`, `PYTHON` —
 | `NODE` | `true` | Node.js: `true` / `false` / `22` / `22.5.0` |
 | `ZSH` | `true` | Zsh: `true` / `false` / `5.9` (apt pin) |
 | `PYTHON` | `true` | Python: `true` / `false` / `3.11` |
+| `WASM` | `false` | WASM: `false` / `targets` / `tools` |
+| `ANDROID` | `false` | Android: `false` / `targets` (linking needs an external NDK) |
 | `CLAUDE_CODE` | `false` | Install Claude Code |
 | `CODEX` | `false` | Install OpenAI Codex |
 | `OPENCODE` | `false` | Install OpenCode + oh-my-opencode |
@@ -92,6 +117,9 @@ The Dockerfile accepts build args. Three of them — `NODE`, `ZSH`, `PYTHON` —
 ```bash
 # Defaults: full image with SSH + Node + Zsh + Python
 docker build -t rust-dev .
+
+# With WASM tooling and Android targets
+docker build --build-arg WASM=tools --build-arg ANDROID=targets -t rust-dev:cross .
 
 # Pin specific versions
 docker build \
@@ -120,7 +148,7 @@ docker build \
 cp .arg.example .arg       # edit values to taste
 make init-secrets          # create ./secrets with placeholder values
 make build                 # build the image
-make run                   # run a container
+make run                   # run a container (with --hostname/--init and a data volume)
 make ssh                   # SSH into the running container
 ```
 
@@ -128,7 +156,7 @@ Other Make targets: `stop`, `rm`, `clean`, `shell`.
 
 ### Using the container helper
 
-`container.sh` creates named containers with persistent volumes and can seed a project directory into `/root/workspace`:
+`container.sh` creates named containers with persistent volumes and can seed a project directory into `/root/workspace`. It sets `--hostname` (from the container name) and `--init` automatically:
 
 ```bash
 ./container.sh --dir /path/to/your/project --ssh 2222
@@ -153,15 +181,17 @@ See [`secrets.example/`](./secrets.example) for placeholders. **Never commit rea
 
 On startup, `entrypoint.sh`:
 
-1. Picks `npx` (if Node present) or `bunx` as the JS runtime, configurable via `-e USE_NODE=false`
-2. Authenticates ZhiPu and reloads Claude Code / OpenCode if installed
-3. Starts the SSH server
+1. Authenticates ZhiPu and reloads Claude Code / OpenCode if installed (non-fatal: the container still boots if auth fails, e.g. offline)
+2. Writes proxy environment into `/etc/environment` for SSH sessions
+3. Starts the SSH server and re-execs into `sleep infinity` as PID 1
+
+Secrets are never echoed to container logs.
 
 ---
 
 ## Upgrading existing containers
 
-`update.sh` rebuilds the image and recreates all containers that use it, preserving name, ports, volumes, and environment:
+`update.sh` rebuilds the image and recreates all containers that use it, preserving name, hostname, ports, volumes, and environment:
 
 ```bash
 ./update.sh --build         # rebuild + upgrade all containers
@@ -172,7 +202,14 @@ On startup, `entrypoint.sh`:
 
 ## CI / Multi-arch build
 
-[`.github/workflows/docker.yml`](./.github/workflows/docker.yml) builds `linux/amd64` + `linux/arm64` in parallel via QEMU + Buildx on every push to `main`, and pushes a single multi-arch manifest to GHCR. Manual runs are also supported (Actions tab → "Run workflow"), with an optional extra tag.
+[`.github/workflows/docker.yml`](./.github/workflows/docker.yml):
+
+- On every push to `main`, builds all four variants (`latest`, `slim`, `wasm`, `android`) in parallel for `linux/amd64` + `linux/arm64` via QEMU + Buildx, and pushes them to GHCR with Rust-version tags (e.g. `rust-1.99.0`, `wasm-rust-1.99.0`)
+- A daily scheduled job checks for a new Rust stable release and rebuilds only when one is found (skips if the version tag already exists)
+- Pushes to `ci/**` branches also build, tagged with a `-ci-<branch>` suffix so `latest` is never touched by test builds
+- A `smoke` job boots every variant and verifies over real SSH: zsh login shell, `C.UTF-8` locale, backspace key binding, completion loading, `ls` colors, hostname, cargo on `PATH`, and per-variant contents (wasm targets, Android targets, …)
+
+Manual runs are also supported (Actions tab → "Run workflow"), with an optional extra tag for the full image.
 
 ---
 

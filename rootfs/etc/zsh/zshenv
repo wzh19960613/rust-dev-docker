@@ -1,0 +1,5 @@
+typeset -U path
+[[ -d /usr/local/cargo/bin ]] && path=(/usr/local/cargo/bin $path)
+export RUSTUP_HOME=/usr/local/rustup
+export CARGO_HOME=/usr/local/cargo
+export LANG=C.UTF-8
